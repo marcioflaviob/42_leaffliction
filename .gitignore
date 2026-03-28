@@ -207,3 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 .DS_Store
+Apple/
+Grape/
+images/
+augmented_directory/
+leaves.zip
