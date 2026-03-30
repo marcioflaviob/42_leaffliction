@@ -1,6 +1,12 @@
+import sys
+import getpass
 from pathlib import Path
 
-import torch
+try:
+    import torch
+except ImportError:
+    sys.path.insert(0, f'/goinfre/{getpass.getuser()}/torch_env')
+    import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import datasets, transforms
 

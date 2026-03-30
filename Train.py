@@ -1,7 +1,13 @@
 import argparse
+import sys
+import getpass
 from pathlib import Path
 
-import torch
+try:
+    import torch
+except ImportError:
+    sys.path.insert(0, f'/goinfre/{getpass.getuser()}/torch_env')
+    import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
