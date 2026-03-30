@@ -212,3 +212,4 @@ Grape/
 images/
 augmented_directory/
 leaves.zip
+leaf_cnn.pt

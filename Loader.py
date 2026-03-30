@@ -1,118 +1,74 @@
-import json
-import numpy as np
 from pathlib import Path
-from PIL import Image
 
-from Augmentation import balance_directory
+import torch
+from torch.utils.data import DataLoader, Dataset, random_split
+from torchvision import datasets, transforms
 
+# Dataset
+VAL_SPLIT  = 0.20
+BATCH_SIZE = 32
+SEED       = 42
 
-def augment_and_balance(input_dir: Path) -> Path:
-    print(f"Balancing dataset under '{input_dir}'...")
-    balance_directory(input_dir)
+train_transform = transforms.Compose([
+    transforms.RandomResizedCrop(224),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+])
 
-    aug_dir = input_dir.parent / "augmented_directory"
-
-    if not aug_dir.exists():
-        raise RuntimeError(
-            f"Expected augmented_directory at '{aug_dir}' but it was not created."
-        )
-
-    print(f"Augmented dataset ready at: {aug_dir}")
-    return aug_dir
-
-
-def encode_labels(aug_dir: Path) -> tuple[dict, dict]:
-    classes = sorted([d.name for d in aug_dir.iterdir() if d.is_dir()])
-
-    if not classes:
-        raise ValueError(f"No subdirectories found in '{aug_dir}'.")
-
-    class_to_idx = {name: idx for idx, name in enumerate(classes)}
-    idx_to_class = {idx: name for name, idx in class_to_idx.items()}
-
-    print(f"\nFound {len(classes)} classes:")
-    for idx, name in idx_to_class.items():
-        print(f"  {idx:>3} → {name}")
-
-    return class_to_idx, idx_to_class
+val_transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+])
 
 
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'}
-TARGET_SIZE = (224, 224)
+
+class _TransformSubset(Dataset):
+    """Wraps a Subset and applies an independent transform."""
+
+    def __init__(self, subset, transform):
+        self.subset    = subset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        img, label = self.subset[idx]
+        if self.transform:
+            img = self.transform(img)
+        return img, label
 
 
-def load_dataset(aug_dir: Path,
-                 class_to_idx: dict,
-                 target_size: tuple = TARGET_SIZE
-                 ) -> tuple[np.ndarray, np.ndarray]:
-    image_paths = []
-    labels      = []
+def load_datasets(root: Path):
+    """Split root (ImageFolder layout) into 80/20 train/val DataLoaders."""
+    # Load without any transform so each split can apply its own
+    full_dataset = datasets.ImageFolder(root=str(root), transform=None)
+    class_names  = full_dataset.classes
+    print(f"\nClasses found ({len(class_names)}): {class_names}")
 
-    for class_dir in sorted(aug_dir.iterdir()):
-        if not class_dir.is_dir():
-            continue
-        label_idx = class_to_idx.get(class_dir.name)
-        if label_idx is None:
-            print(f"  Warning: '{class_dir.name}' not in class map, skipping.")
-            continue
-        for img_path in sorted(class_dir.iterdir()):
-            if img_path.suffix in IMAGE_EXTENSIONS:
-                image_paths.append(img_path)
-                labels.append(label_idx)
+    n_val   = int(len(full_dataset) * VAL_SPLIT)
+    n_train = len(full_dataset) - n_val
+    print(f"Split: {n_train} train / {n_val} val")
 
-    total = len(image_paths)
-    if total == 0:
-        raise ValueError(f"No images found under '{aug_dir}'.")
+    generator = torch.Generator().manual_seed(SEED)
+    train_subset, val_subset = random_split(
+        full_dataset, [n_train, n_val], generator=generator
+    )
 
-    print(f"\nLoading {total} images "
-          f"(originals + all 6 augmented variants) at {target_size}...")
+    train_set = _TransformSubset(train_subset, train_transform)
+    val_set   = _TransformSubset(val_subset,   val_transform)
 
-    X = np.empty((total, *target_size, 3), dtype=np.float32)
-    y = np.array(labels, dtype=np.int32)
+    train_loader = DataLoader(
+        train_set, batch_size=BATCH_SIZE,
+        shuffle=True, num_workers=2, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_set, batch_size=BATCH_SIZE,
+        shuffle=False, num_workers=2, pin_memory=True
+    )
 
-    skipped = []
-
-    for i, img_path in enumerate(image_paths):
-        try:
-            img = Image.open(img_path).convert("RGB")
-            img = img.resize(target_size, Image.LANCZOS)
-            X[i] = np.array(img, dtype=np.float32) / 255.0
-
-            if (i + 1) % 100 == 0 or (i + 1) == total:
-                print(f"  {i + 1}/{total} loaded...", end="\r")
-
-        except Exception as e:
-            print(f"\n  Warning: skipping '{img_path.name}': {e}")
-            skipped.append(i)
-
-    if skipped:
-        mask = np.ones(total, dtype=bool)
-        mask[skipped] = False
-        X = X[mask]
-        y = y[mask]
-        print(f"\n  Skipped {len(skipped)} unreadable files.")
-
-    print(f"\nDataset ready: {X.shape}  (min={X.min():.3f}, max={X.max():.3f})")
-    print(f"Label distribution:")
-    for idx, name in sorted((v, k) for k, v in class_to_idx.items()):
-        count = int((y == idx).sum())
-        print(f"  {idx:>3}  {name:<30} {count:>5} images")
-
-    return X, y
-
-
-def save_classes_json(idx_to_class: dict, out_path: Path):
-    payload = {str(k): v for k, v in idx_to_class.items()}
-    out_path.write_text(json.dumps(payload, indent=2))
-    print(f"Saved classes.json → {out_path}")
-
-
-if __name__ == "__main__":
-    input_dir = Path("./Apple")
-
-    aug_dir = augment_and_balance(input_dir)
-
-    class_to_idx, idx_to_class = encode_labels(aug_dir)
-
-    X, y = load_dataset(aug_dir, class_to_idx)
-
+    return train_loader, val_loader, class_names
