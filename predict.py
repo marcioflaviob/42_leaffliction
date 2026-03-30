@@ -3,11 +3,7 @@ import sys
 import getpass
 from pathlib import Path
 
-try:
-    import torch
-except ImportError:
-    sys.path.insert(0, f'/goinfre/{getpass.getuser()}/torch_env')
-    import torch
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
